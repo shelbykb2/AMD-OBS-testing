@@ -11,6 +11,7 @@
 #include <mutex>
 #include <deque>
 #include <map>
+#include <atomic>
 
 #include <AMF/components/VideoEncoderHEVC.h>
 #include <AMF/components/VideoEncoderVCE.h>
@@ -186,6 +187,12 @@ struct amf_base {
 	bool bframes_supported = false;
 	bool first_update = true;
 	bool roi_supported = false;
+	/* PR #12097 backport: when reconfiguring a grouped encoder we skip
+	 * Flush/ReInit (which is unstable on AMF when several encoders share
+	 * the command queue) and force an IDR on the next submitted frame so
+	 * the group stays IDR-aligned. Set from the encoder update callback and
+	 * consumed on the encode thread, so it must be atomic. */
+	std::atomic<bool> force_idr_next = false;
 
 	inline amf_base(bool fallback) : fallback(fallback) {}
 	virtual ~amf_base() = default;
@@ -718,6 +725,30 @@ static void amf_encode_base(amf_base *enc, AMFSurface *amf_surf, encoder_packet 
 		/* add ROI data (if any)               */
 		if (enc->roi_supported && obs_encoder_has_roi(enc->encoder))
 			add_roi(enc, amf_surf);
+
+		/* ----------------------------------- */
+		/* force an IDR on the next submitted frame if requested
+		 * (multitrack DBR cheap-reconfigure path, PR #12097).
+		 * exchange() atomically reads-and-clears so the flag is
+		 * consumed exactly once even though it is set on another thread. */
+		if (enc->force_idr_next.exchange(false)) {
+			if (enc->codec == amf_codec_type::AVC) {
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE,
+						      AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_INSERT_AUD, true);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_INSERT_SPS, true);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_INSERT_PPS, true);
+			} else if (enc->codec == amf_codec_type::HEVC) {
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE,
+						      AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_HEVC_INSERT_AUD, true);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, true);
+			} else if (enc->codec == amf_codec_type::AV1) {
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE,
+						      AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE_KEY);
+				amf_surf->SetProperty(AMF_VIDEO_ENCODER_AV1_FORCE_INSERT_SEQUENCE_HEADER, true);
+			}
+		}
 
 		/* ----------------------------------- */
 		/* submit frame                        */
@@ -1362,6 +1393,17 @@ try {
 
 	amf_avc_update_data(enc, rc, bitrate * 1000, qp);
 
+	if (obs_encoder_in_group(enc->encoder)) {
+		/* Grouped (multitrack) path: skip Flush+ReInit and force an
+		 * IDR on the next frame so all encoders in the group remain
+		 * IDR-aligned. Backport of obsproject/obs-studio#12097. */
+		enc->force_idr_next = true;
+		info("multitrack DBR: bitrate -> %lld kbps via IDR-force "
+		     "(group encoder, no Flush/ReInit)",
+		     (long long)bitrate);
+		return true;
+	}
+
 	res = enc->amf_encoder->Flush();
 	if (res != AMF_OK)
 		throw amf_error("AMFComponent::Flush failed", res);
@@ -1723,7 +1765,8 @@ static void register_avc()
 	amf_encoder_info.get_defaults = amf_avc_defaults;
 	amf_encoder_info.get_properties = amf_avc_properties;
 	amf_encoder_info.get_extra_data = amf_extra_data;
-	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI;
+	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI |
+				OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE;
 
 	obs_register_encoder(&amf_encoder_info);
 
@@ -1818,6 +1861,14 @@ try {
 	AMF_RESULT res = AMF_OK;
 
 	amf_hevc_update_data(enc, rc, bitrate * 1000, qp);
+
+	if (obs_encoder_in_group(enc->encoder)) {
+		enc->force_idr_next = true;
+		info("multitrack DBR: bitrate -> %lld kbps via IDR-force "
+		     "(group encoder, no Flush/ReInit)",
+		     (long long)bitrate);
+		return true;
+	}
 
 	res = enc->amf_encoder->Flush();
 	if (res != AMF_OK)
@@ -2111,7 +2162,8 @@ static void register_hevc()
 	amf_encoder_info.get_defaults = amf_hevc_defaults;
 	amf_encoder_info.get_properties = amf_hevc_properties;
 	amf_encoder_info.get_extra_data = amf_extra_data;
-	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI;
+	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI |
+				OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE;
 
 	obs_register_encoder(&amf_encoder_info);
 
@@ -2222,6 +2274,14 @@ try {
 	AMF_RESULT res = AMF_OK;
 
 	amf_av1_update_data(enc, rc, bitrate * 1000, cq_level);
+
+	if (obs_encoder_in_group(enc->encoder)) {
+		enc->force_idr_next = true;
+		info("multitrack DBR: bitrate -> %lld kbps via IDR-force "
+		     "(group encoder, no Flush/ReInit)",
+		     (long long)bitrate);
+		return true;
+	}
 
 	res = enc->amf_encoder->Flush();
 	if (res != AMF_OK)
@@ -2513,7 +2573,8 @@ static void register_av1()
 	amf_encoder_info.get_defaults = amf_av1_defaults;
 	amf_encoder_info.get_properties = amf_av1_properties;
 	amf_encoder_info.get_extra_data = amf_extra_data;
-	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI;
+	amf_encoder_info.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI |
+				OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE;
 
 	obs_register_encoder(&amf_encoder_info);
 
