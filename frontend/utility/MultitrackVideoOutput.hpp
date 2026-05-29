@@ -41,6 +41,20 @@ public:
 		return current ? obs_output_get_ref(current->output_) : nullptr;
 	}
 
+	// Returns the primary multitrack video encoder (the first / highest-
+	// quality encoder in the group), or nullptr if streaming has not been
+	// prepared yet. Non-owning -- caller must not release. Used by the
+	// Recording "Use Stream Encoder" path so we don't have to spin up a
+	// second AMF session on AMD (fixes obsproject/obs-studio#13127).
+	obs_encoder_t *StreamingVideoEncoder()
+	{
+		const std::lock_guard current_lock{current_mutex};
+		if (!current || !current->output_) {
+			return nullptr;
+		}
+		return obs_output_get_video_encoder2(current->output_, 0);
+	}
+
 	bool RestartOnError() { return restart_on_error; }
 
 private:
