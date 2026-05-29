@@ -353,9 +353,23 @@ inline void AdvancedOutput::SetupRecording()
 		tracks = config_get_int(main->Config(), "AdvOut", "TrackIndex");
 
 	if (useStreamEncoder) {
-		obs_output_set_video_encoder(fileOutput, videoStreaming);
+		/* Fix for obsproject/obs-studio#13127: when Twitch Enhanced
+		 * Broadcasting (multitrack video) is active, route recording
+		 * to the multitrack stream encoder instead of spinning up a
+		 * second AMF session. AMD's parallel encoder-session budget
+		 * is small; an extra session breaks recording on AMD even
+		 * though it works on NVIDIA. */
+		obs_encoder_t *streamEnc = nullptr;
+		if (multitrackVideo && multitrackVideoActive)
+			streamEnc = multitrackVideo->StreamingVideoEncoder();
+		if (!streamEnc)
+			streamEnc = videoStreaming;
+		obs_output_set_video_encoder(fileOutput, streamEnc);
 		if (replayBuffer)
-			obs_output_set_video_encoder(replayBuffer, videoStreaming);
+			obs_output_set_video_encoder(replayBuffer, streamEnc);
+		if (multitrackVideo && multitrackVideoActive && streamEnc != videoStreaming)
+			blog(LOG_INFO,
+			     "AdvancedOutput: recording attached to multitrack streaming encoder #0");
 	} else {
 		if (rescaleFilter != OBS_SCALE_DISABLE && rescaleRes && *rescaleRes) {
 			if (sscanf(rescaleRes, "%ux%u", &cx, &cy) != 2) {
