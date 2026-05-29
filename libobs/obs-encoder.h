@@ -38,6 +38,10 @@ typedef struct obs_encoder obs_encoder_t;
 #define OBS_ENCODER_CAP_INTERNAL (1 << 3)
 #define OBS_ENCODER_CAP_ROI (1 << 4)
 #define OBS_ENCODER_CAP_SCALING (1 << 5)
+/* Encoder supports cheap reconfiguration (no Flush+ReInit) when grouped, by
+ * forcing an IDR on the next frame instead. Used by the multitrack-video
+ * dynamic-bitrate path. Backported from obsproject/obs-studio#12097. */
+#define OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE (1 << 6)
 
 /** Specifies the encoder type */
 enum obs_encoder_type {

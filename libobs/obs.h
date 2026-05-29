@@ -2470,6 +2470,9 @@ EXPORT bool obs_encoder_set_group(obs_encoder_t *encoder, obs_encoder_group_t *g
 EXPORT obs_encoder_group_t *obs_encoder_group_create();
 EXPORT void obs_encoder_group_destroy(obs_encoder_group_t *group);
 
+/** Returns whether this encoder is currently a member of an encoder group. */
+EXPORT bool obs_encoder_in_group(const obs_encoder_t *encoder);
+
 /* ------------------------------------------------------------------------- */
 /* Stream Services */
 
