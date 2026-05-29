@@ -574,6 +574,10 @@ void MultitrackVideoOutput::StopStreaming()
 		obs_output_stop(dump_output);
 }
 
+/* Defined in SimpleOutput.cpp: maps a Simple-mode encoder token (e.g.
+ * SIMPLE_ENCODER_AMD) to the actual encoder id (e.g. "h264_texture_amf"). */
+extern const char *get_simple_output_encoder(const char *name);
+
 bool MultitrackVideoOutput::HandleIncompatibleSettings(QWidget *parent, config_t *config, obs_service_t *service,
 						       bool &enableDynBitrate)
 {
@@ -600,7 +604,28 @@ bool MultitrackVideoOutput::HandleIncompatibleSettings(QWidget *parent, config_t
 		num += 1;
 	};
 
-	check_setting(enableDynBitrate, "Basic.Settings.Output.DynamicBitrate.Beta", "Basic.Settings.Advanced.Network");
+	/* Backport of obsproject/obs-studio#12097: DBR is only incompatible
+	 * with multitrack when the stream encoder can't do cheap (force-IDR)
+	 * reconfiguration while grouped. The AMF texture encoders advertise
+	 * OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE; x264/QSV/NVENC do not. Check
+	 * the caps of the encoder actually configured for streaming rather than
+	 * assuming any registered AMF encoder is the one that will be used. */
+	const char *mode = config_get_string(config, "Output", "Mode");
+	const char *stream_encoder_id;
+	if (mode && strcmp(mode, "Advanced") == 0) {
+		stream_encoder_id = config_get_string(config, "AdvOut", "Encoder");
+	} else {
+		const char *simple_encoder = config_get_string(config, "SimpleOutput", "StreamEncoder");
+		stream_encoder_id = simple_encoder ? get_simple_output_encoder(simple_encoder) : nullptr;
+	}
+
+	bool dyn_bitrate_supported =
+		stream_encoder_id &&
+		(obs_get_encoder_caps(stream_encoder_id) & OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE);
+
+	if (!dyn_bitrate_supported)
+		check_setting(enableDynBitrate, "Basic.Settings.Output.DynamicBitrate.Beta",
+			      "Basic.Settings.Advanced.Network");
 
 	if (incompatible_settings.isEmpty())
 		return true;

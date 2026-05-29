@@ -768,8 +768,21 @@ void SimpleOutput::UpdateRecording()
 	if (!Active())
 		SetupOutputs();
 
+	/* obsproject/obs-studio#13127: when recording shares the streaming
+	 * encoder ("Stream" quality preset) AND Enhanced Broadcasting is
+	 * active, route to the multitrack stream encoder so we don't create
+	 * an extra AMF session on AMD. */
+	obs_encoder_t *recVideoEnc = videoRecording;
+	if (strcmp(quality, "Stream") == 0 && multitrackVideo && multitrackVideoActive) {
+		if (obs_encoder_t *mt = multitrackVideo->StreamingVideoEncoder()) {
+			recVideoEnc = mt;
+			blog(LOG_INFO,
+			     "SimpleOutput: recording attached to multitrack streaming encoder #0");
+		}
+	}
+
 	if (!ffmpegOutput) {
-		obs_output_set_video_encoder(fileOutput, videoRecording);
+		obs_output_set_video_encoder(fileOutput, recVideoEnc);
 		if (flv || strcmp(quality, "Stream") == 0) {
 			obs_output_set_audio_encoder(fileOutput, audioRecording, 0);
 		} else {
@@ -781,7 +794,7 @@ void SimpleOutput::UpdateRecording()
 		}
 	}
 	if (replayBuffer) {
-		obs_output_set_video_encoder(replayBuffer, videoRecording);
+		obs_output_set_video_encoder(replayBuffer, recVideoEnc);
 		if (flv || strcmp(quality, "Stream") == 0) {
 			obs_output_set_audio_encoder(replayBuffer, audioRecording, 0);
 		} else {
